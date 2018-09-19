@@ -3,6 +3,7 @@ import argparse
 import sys
 import socket
 import select
+import queue
 
 # Allow for the parsing of the correct command line arguments
 parser = argparse.ArgumentParser(description='Secure Netcat')
@@ -20,17 +21,45 @@ connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 if bool(args.l):
     connection.bind(('0.0.0.0', int(args.port)))
     connection.listen(1)
-    clientSocket, clientAddress = connection.accept()
 
-    keepAlive = True
+    inputSources = [connection, sys.stdin]
+    outputLocations = []
+    outputData = {}
 
-    while keepAlive:
-        if clientSocket:
-            print('test print')
-        else:
-            # The client is no longer connected
-            keepAlive = False
+    incomingData = ''
 
+    while inputSources:
+        readable, writable, errors = select.select(inputSources, outputLocations, inputSources)
+        for socket in readable:
+            if socket is connection:
+                clientConnection, clientAddress = socket.accept()
+                inputSources.append(clientConnection)
+                outputData[clientConnection] = queue.Queue()
+            else:
+                data = socket.recv(1024)
+                if(data):
+                    outputData[socket].put(data)
+                    if socket not in outputLocations:
+                        outputLocations.append(socket)
+                else:
+                    if socket in outputLocations:
+                        outputLocations.remove(socket)
+                    inputSources.remove(socket)
+                    socket.close()
+                    del outputData[socket]
+        for socket in writable:
+            try:
+                nextMessage = outputData[socket].get_nowait()
+            except queue.Empty:
+                outputLocations.remove(socket)
+            else:
+                socket.send(nextMessage)
+        for socket in errors:
+            inputSources.remove(socket)
+            if socket in outputLocations:
+                outputLocations.remove(socket)
+            socket.close()
+            del outputData[socket]
 
 # Read data from stdin
 content = sys.stdin.read()
