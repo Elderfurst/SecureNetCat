@@ -3,7 +3,9 @@ import argparse
 import sys
 import socket
 import select
-import queue
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Random import get_random_bytes
 
 # Allow for the parsing of the correct command line arguments
 parser = argparse.ArgumentParser(description='Secure Netcat')
@@ -23,61 +25,60 @@ if bool(args.l):
     connection.listen(1)
 
     inputSources = [connection, sys.stdin]
-    outputLocations = []
-    outputData = {}
 
-    incomingData = ''
-
-    while inputSources:
-        readable, writable, errors = select.select(inputSources, outputLocations, inputSources)
-        for socket in readable:
-            if socket is connection:
-                clientConnection, clientAddress = socket.accept()
-                inputSources.append(clientConnection)
-                outputData[clientConnection] = queue.Queue()
-            else:
-                data = socket.recv(1024)
-                if(data):
-                    outputData[socket].put(data)
-                    if socket not in outputLocations:
-                        outputLocations.append(socket)
+    try:
+        while True:
+            for socket in select.select(inputSources, [], [])[0]:
+                # This means a new connection has been received
+                if socket is connection:
+                    clientConnection, clientAddress = socket.accept()
+                    inputSources.append(clientConnection)
+                # sys.stdin is the current readable source
+                elif socket is sys.stdin:
+                    data = socket.readline()
+                    # TODO Encrypt message here
+                    encryptedData = data
+                    for source in inputSources:
+                        if source not in [sys.stdin, connection]:
+                            source.sendall(encryptedData.encode('utf-8'))
+                # An actual client connection is the source
                 else:
-                    if socket in outputLocations:
-                        outputLocations.remove(socket)
-                    inputSources.remove(socket)
-                    socket.close()
-                    del outputData[socket]
-        for socket in writable:
-            try:
-                nextMessage = outputData[socket].get_nowait()
-            except queue.Empty:
-                outputLocations.remove(socket)
-            else:
-                socket.send(nextMessage)
-        for socket in errors:
-            inputSources.remove(socket)
-            if socket in outputLocations:
-                outputLocations.remove(socket)
-            socket.close()
-            del outputData[socket]
-
-# Read data from stdin
-content = sys.stdin.read()
-
-# Connect to the specified server and send the data
-connection.connect((args.destination, int(args.port)))
-connection.sendall(content)
-connection.shutdown(socket.SHUT_WR)
-
-# Read the data coming in if established as a listener
-if bool(args.l):
-    incoming = ''
-    while True:
-        newData = connection.recv(4096)
-        if incoming == '':
-            break
-        else:
-            incoming += newData
-
-connection.close()
-print(incoming)
+                    data = socket.recv(1024)
+                    if data:
+                        # TODO Decrypt message here
+                        decryptedData = data
+                        sys.stdout.write(decryptedData.decode('utf-8'))
+                    else:
+                        inputSources.remove(socket)
+                        socket.close()
+                        connection.close()
+                        exit(0)
+    except KeyboardInterrupt:
+        connection.close()
+        exit(0)
+else:
+    try:
+        connection.connect((args.destination, int(args.port)))
+        inputSources = [sys.stdin, connection]
+        while True:
+            for socket in select.select(inputSources, [], [])[0]:
+                # Read the data coming from stdin
+                if socket is sys.stdin:
+                    data = socket.readline()
+                    if data:
+                        # TODO Encrypt message here
+                        encryptedData = data
+                        connection.sendall(encryptedData.encode('utf-8'))
+                    else:
+                        connection.close()
+                        exit(0)
+                # Receive the data from the server
+                else:
+                    data = connection.recv(1024)
+                    # TODO decrypt data here
+                    decryptedData = data
+                    sys.stdout.write(decryptedData.decode('utf-8'))
+                    inputSources.remove(connection)
+    except KeyboardInterrupt:
+        connection.close()
+        exit(0)
